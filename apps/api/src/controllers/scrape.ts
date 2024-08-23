@@ -1,6 +1,5 @@
 import { ExtractorOptions, PageOptions } from './../lib/entities';
 import { Request, Response } from "express";
-import { WebScraperDataProvider } from "../scraper/WebScraper";
 import { billTeam, checkTeamCredits } from "../services/billing/credit_billing";
 import { authenticateUser } from "./auth";
 import { RateLimiterMode } from "../types";
@@ -9,8 +8,11 @@ import { Document } from "../lib/entities";
 import { isUrlBlocked } from "../scraper/WebScraper/utils/blocklist"; // Import the isUrlBlocked function
 import { numTokensFromString } from '../lib/LLM-extraction/helpers';
 import { defaultPageOptions, defaultExtractorOptions, defaultTimeout, defaultOrigin } from '../lib/default-values';
+import { addScrapeJob } from '../services/queue-jobs';
+import { getScrapeQueue } from '../services/queue-service';
 import { v4 as uuidv4 } from "uuid";
 import { Logger } from '../lib/logger';
+import * as Sentry from "@sentry/node";
 
 export async function scrapeHelper(
   jobId: string,
@@ -36,50 +38,70 @@ export async function scrapeHelper(
     return { success: false, error: "Firecrawl currently does not support social media scraping due to policy restrictions. We're actively working on building support for it.", returnCode: 403 };
   }
 
-  const a = new WebScraperDataProvider();
-  await a.setOptions({
-    jobId,
+  const job = await addScrapeJob({
+    url,
     mode: "single_urls",
-    urls: [url],
-    crawlerOptions: {
-      ...crawlerOptions,
-    },
-    pageOptions: pageOptions,
-    extractorOptions: extractorOptions,
+    crawlerOptions,
+    team_id,
+    pageOptions,
+    extractorOptions,
+    origin: req.body.origin ?? defaultOrigin,
+  }, {}, jobId);
+
+  let doc;
+
+  const err = await Sentry.startSpan({ name: "Wait for job to finish", op: "bullmq.wait", attributes: { job: jobId } }, async (span) => {
+    try {
+      doc = (await new Promise((resolve, reject) => {
+        const start = Date.now();
+        const int = setInterval(async () => {
+          if (Date.now() >= start + timeout) {
+            clearInterval(int);
+            reject(new Error("Job wait "));
+          } else if (await job.getState() === "completed") {
+            clearInterval(int);
+            resolve((await getScrapeQueue().getJob(job.id)).returnvalue);
+          }
+        }, 1000);
+      }))[0]
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("Job wait")) {
+        span.setAttribute("timedOut", true);
+        return {
+          success: false,
+          error: "Request timed out",
+          returnCode: 408,
+        }
+      } else {
+        throw e;
+      }
+    }
+    span.setAttribute("result", JSON.stringify(doc));
+    return null;
   });
 
-  const timeoutPromise = new Promise<{ success: boolean; error?: string; returnCode: number }>((_, reject) =>
-    setTimeout(() => reject({ success: false, error: "Request timed out. Increase the timeout by passing `timeout` param to the request.", returnCode: 408 }), timeout)
-  );
-
-  const docsPromise = a.getDocuments(false);
-
-  let docs;
-  try {
-    docs = await Promise.race([docsPromise, timeoutPromise]);
-  } catch (error) {
-    return error;
+  if (err !== null) {
+    return err;
   }
 
-  // make sure doc.content is not empty
-  let filteredDocs = docs.filter(
-    (doc: { content?: string }) => doc.content && doc.content.trim().length > 0
-  );
-  if (filteredDocs.length === 0) {
-    return { success: true, error: "No page found", returnCode: 200, data: docs[0] };
+  await job.remove();
+
+  if (!doc) {
+    console.error("!!! PANIC DOC IS", doc, job);
+    return { success: true, error: "No page found", returnCode: 200, data: doc };
   }
 
- 
+  delete doc.index;
+  delete doc.provider;
+
   // Remove rawHtml if pageOptions.rawHtml is false and extractorOptions.mode is llm-extraction-from-raw-html
   if (!pageOptions.includeRawHtml && extractorOptions.mode == "llm-extraction-from-raw-html") {
-    filteredDocs.forEach(doc => {
-      delete doc.rawHtml;
-    });
+    delete doc.rawHtml;
   }
 
   return {
     success: true,
-    data: filteredDocs[0],
+    data: doc,
     returnCode: 200,
   };
 }
@@ -104,26 +126,26 @@ export async function scrapeController(req: Request, res: Response) {
     let timeout = req.body.timeout ?? defaultTimeout;
 
     if (extractorOptions.mode.includes("llm-extraction")) {
+      if (typeof extractorOptions.extractionSchema !== "object" || extractorOptions.extractionSchema === null) {
+        return res.status(400).json({ error: "extractorOptions.extractionSchema must be an object if llm-extraction mode is specified" });
+      }
+
       pageOptions.onlyMainContent = true;
       timeout = req.body.timeout ?? 90000;
     }
 
-    const checkCredits = async () => {
-      try {
-        const { success: creditsCheckSuccess, message: creditsCheckMessage } = await checkTeamCredits(team_id, 1);
-        if (!creditsCheckSuccess) {
-          earlyReturn = true;
-          return res.status(402).json({ error: "Insufficient credits" });
-        }
-      } catch (error) {
-        Logger.error(error);
+    // checkCredits
+    try {
+      const { success: creditsCheckSuccess, message: creditsCheckMessage } = await checkTeamCredits(team_id, 1);
+      if (!creditsCheckSuccess) {
         earlyReturn = true;
-        return res.status(500).json({ error: "Error checking team credits. Please contact hello@firecrawl.com for help." });
+        return res.status(402).json({ error: "Insufficient credits" });
       }
-    };
-
-
-    await checkCredits();
+    } catch (error) {
+      Logger.error(error);
+      earlyReturn = true;
+      return res.status(500).json({ error: "Error checking team credits. Please contact hello@firecrawl.com for help." });
+    }
 
     const jobId = uuidv4();
 
@@ -143,7 +165,7 @@ export async function scrapeController(req: Request, res: Response) {
     const numTokens = (result.data && result.data.markdown) ? numTokensFromString(result.data.markdown, "gpt-3.5-turbo") : 0;
 
     if (result.success) {
-      let creditsToBeBilled = 1; // Assuming 1 credit per document
+      let creditsToBeBilled = 0; // billing for doc done on queue end
       const creditsPerLLMExtract = 50;
 
       if (extractorOptions.mode.includes("llm-extraction")) {
@@ -190,6 +212,7 @@ export async function scrapeController(req: Request, res: Response) {
     
     return res.status(result.returnCode).json(result);
   } catch (error) {
+    Sentry.captureException(error);
     Logger.error(error);
     return res.status(500).json({ error: error.message });
   }

@@ -26,6 +26,7 @@ env:
   PYPI_USERNAME: ${{ secrets.PYPI_USERNAME }}
   PYPI_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
   NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+  SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
 jobs:
   pre-deploy-e2e-tests:
@@ -169,6 +170,41 @@ jobs:
         run: npm run test
         working-directory: ./apps/js-sdk/firecrawl
         
+  go-sdk-tests:
+    name: Go SDK Tests
+    needs: pre-deploy-e2e-tests
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis
+        ports:
+          - 6379:6379
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+      - name: Install pnpm
+        run: npm install -g pnpm
+      - name: Install dependencies
+        run: pnpm install
+        working-directory: ./apps/api
+      - name: Start the application
+        run: npm start &
+        working-directory: ./apps/api
+        id: start_app
+      - name: Start workers
+        run: npm run workers &
+        working-directory: ./apps/api
+        id: start_workers
+      - name: Install dependencies for Go SDK
+        run: go mod tidy
+        working-directory: ./apps/go-sdk
+      - name: Run tests for Go SDK
+        run: go test -v ./... -timeout 180s
+        working-directory: ./apps/go-sdk/firecrawl
+
   deploy:
     name: Deploy app
     runs-on: ubuntu-latest
@@ -176,11 +212,12 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only -a firecrawl-scraper-js
+      - run: flyctl deploy --remote-only -a firecrawl-scraper-js --build-secret SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN
         working-directory: ./apps/api
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           BULL_AUTH_KEY: ${{ secrets.BULL_AUTH_KEY }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
   build-and-publish-python-sdk:
     name: Build and publish Python SDK
