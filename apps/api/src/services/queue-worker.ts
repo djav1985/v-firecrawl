@@ -21,6 +21,8 @@ import { addCrawlJob, addCrawlJobDone, crawlToCrawler, finishCrawl, getCrawl, ge
 import { StoredCrawl } from "../lib/crawl-redis";
 import { addScrapeJob } from "./queue-jobs";
 import { supabaseGetJobById } from "../../src/lib/supabase-jobs";
+import { addJobPriority, deleteJobPriority, getJobPriority } from "../../src/lib/job-priority";
+import { PlanType } from "../types";
 
 if (process.env.ENV === "production") {
   initSDK({
@@ -50,6 +52,7 @@ const processJobInternal = async (token: string, job: Job) => {
     await job.extendLock(token, jobLockExtensionTime);
   }, jobLockExtendInterval);
 
+  await addJobPriority(job.data.team_id, job.id );
   let err = null;
   try {
     const result = await processJob(job, token);
@@ -67,6 +70,7 @@ const processJobInternal = async (token: string, job: Job) => {
     err = error;
     await job.moveToFailed(error, token, false);
   } finally {
+    await deleteJobPriority(job.data.team_id, job.id );
     clearInterval(extendLockInterval);
   }
 
@@ -191,6 +195,14 @@ async function processJob(job: Job, token: string) {
     const end = Date.now();
     const timeTakenInSeconds = (end - start) / 1000;
 
+    const rawHtml = docs[0] ? docs[0].rawHtml : "";
+
+    if (job.data.crawl_id && (!job.data.pageOptions || !job.data.pageOptions.includeRawHtml)) {
+      if (docs[0] && docs[0].rawHtml) {
+        delete docs[0].rawHtml;
+      }
+    }
+
     const data = {
       success,
       result: {
@@ -207,7 +219,7 @@ async function processJob(job: Job, token: string) {
     };
 
     if (job.data.mode === "crawl") {
-      await callWebhook(job.data.team_id, job.id as string, data);
+      await callWebhook(job.data.team_id, job.id as string, data, job.data.webhook, job.data.v1);
     }
 
     if (job.data.crawl_id) {
@@ -234,21 +246,25 @@ async function processJob(job: Job, token: string) {
       if (!job.data.sitemapped) {
         if (!sc.cancelled) {
           const crawler = crawlToCrawler(job.data.crawl_id, sc);
-          let linksOnPage = [];
-          try{
-            linksOnPage = data.docs[0]?.linksOnPage ?? [];
-          }catch(e){
-            linksOnPage = []
-          }
+
           const links = crawler.filterLinks(
-            linksOnPage.map(href => crawler.filterURL(href.trim(), sc.originUrl))
-            .filter(x => x !== null),
+            crawler.extractLinksFromHTML(rawHtml ?? "", sc.originUrl),
             Infinity,
             sc.crawlerOptions?.maxDepth ?? 10
           )
           
           for (const link of links) {
             if (await lockURL(job.data.crawl_id, sc, link)) {
+              
+              // This seems to work really welel
+              const jobPriority = await getJobPriority({plan:sc.plan as PlanType, team_id: sc.team_id, basePriority: job.data.crawl_id ? 20 : 10})
+              const jobId = uuidv4();
+
+              // console.log("plan: ",  sc.plan);
+              // console.log("team_id: ", sc.team_id)
+              // console.log("base priority: ", job.data.crawl_id ? 20 : 10)
+              // console.log("job priority: " , jobPriority, "\n\n\n")
+
               const newJob = await addScrapeJob({
                 url: link,
                 mode: "single_urls",
@@ -257,7 +273,8 @@ async function processJob(job: Job, token: string) {
                 pageOptions: sc.pageOptions,
                 origin: job.data.origin,
                 crawl_id: job.data.crawl_id,
-              });
+                v1: job.data.v1,
+              }, {}, jobId, jobPriority);
 
               await addCrawlJob(job.data.crawl_id, newJob.id);
             }
@@ -326,7 +343,7 @@ async function processJob(job: Job, token: string) {
           docs: fullDocs,
         };
 
-        await callWebhook(job.data.team_id, job.data.crawl_id, data);
+        await callWebhook(job.data.team_id, job.data.crawl_id, data, job.data.webhook, job.data.v1);
       }
     }
 
@@ -370,7 +387,7 @@ async function processJob(job: Job, token: string) {
     };
     
     if (job.data.mode === "crawl" || job.data.crawl_id) {
-      await callWebhook(job.data.team_id, job.data.crawl_id ?? job.id as string, data);
+      await callWebhook(job.data.team_id, job.data.crawl_id ?? job.id as string, data, job.data.webhook, job.data.v1);
     }
     
     if (job.data.crawl_id) {
