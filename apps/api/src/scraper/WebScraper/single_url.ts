@@ -23,12 +23,15 @@ import { clientSideError } from "../../strings";
 
 dotenv.config();
 
+const useScrapingBee = process.env.SCRAPING_BEE_API_KEY !== '' && process.env.SCRAPING_BEE_API_KEY !== undefined;
+const useFireEngine = process.env.FIRE_ENGINE_BETA_URL !== '' && process.env.FIRE_ENGINE_BETA_URL !== undefined;
+
 export const baseScrapers = [
-  "fire-engine;chrome-cdp",
-  "fire-engine",
-  "scrapingBee",
-  process.env.USE_DB_AUTHENTICATION ? undefined : "playwright",
-  "scrapingBeeLoad",
+  useFireEngine ? "fire-engine;chrome-cdp" : undefined,
+  useFireEngine ? "fire-engine" : undefined,
+  useScrapingBee ? "scrapingBee" : undefined,
+  useFireEngine ? undefined : "playwright",
+  useScrapingBee ? "scrapingBeeLoad" : undefined,
   "fetch",
 ].filter(Boolean);
 
@@ -85,18 +88,18 @@ function getScrapingFallbackOrder(
   });
 
   let defaultOrder = [
-    !process.env.USE_DB_AUTHENTICATION ? undefined : "fire-engine;chrome-cdp",
-    !process.env.USE_DB_AUTHENTICATION ? undefined : "fire-engine",
-    "scrapingBee",
-    process.env.USE_DB_AUTHENTICATION ? undefined : "playwright",
-    "scrapingBeeLoad",
+    useFireEngine ? "fire-engine;chrome-cdp" : undefined,
+    useFireEngine ? "fire-engine" : undefined,
+    useScrapingBee ? "scrapingBee" : undefined,
+    useScrapingBee ? "scrapingBeeLoad" : undefined,
+    useFireEngine ? undefined : "playwright",
     "fetch",
   ].filter(Boolean);
 
   if (isWaitPresent || isScreenshotPresent || isHeadersPresent) {
     defaultOrder = [
       "fire-engine",
-      process.env.USE_DB_AUTHENTICATION ? undefined : "playwright",
+      useFireEngine ? undefined : "playwright",
       ...defaultOrder.filter(
         (scraper) => scraper !== "fire-engine" && scraper !== "playwright"
       ),
@@ -130,6 +133,7 @@ export async function scrapSingleUrl(
 ): Promise<Document> {
   pageOptions = {
     includeMarkdown: pageOptions.includeMarkdown ?? true,
+    includeExtract: pageOptions.includeExtract ?? false,
     onlyMainContent: pageOptions.onlyMainContent ?? false,
     includeHtml: pageOptions.includeHtml ?? false,
     includeRawHtml: pageOptions.includeRawHtml ?? false,
@@ -388,11 +392,11 @@ export async function scrapSingleUrl(
     if (screenshot && screenshot.length > 0) {
       document = {
         content: text,
-        markdown: pageOptions.includeMarkdown ? text : undefined,
+        markdown: pageOptions.includeMarkdown || pageOptions.includeExtract ? text : undefined,
         html: pageOptions.includeHtml ? html : undefined,
         rawHtml:
           pageOptions.includeRawHtml ||
-            extractorOptions?.mode === "llm-extraction-from-raw-html"
+            (extractorOptions?.mode === "llm-extraction-from-raw-html" && pageOptions.includeExtract)
             ? rawHtml
             : undefined,
         linksOnPage: pageOptions.includeLinks ? linksOnPage : undefined,
@@ -407,11 +411,11 @@ export async function scrapSingleUrl(
     } else {
       document = {
         content: text,
-        markdown: pageOptions.includeMarkdown ? text : undefined,
+        markdown: pageOptions.includeMarkdown || pageOptions.includeExtract ? text : undefined,
         html: pageOptions.includeHtml ? html : undefined,
         rawHtml:
           pageOptions.includeRawHtml ||
-            extractorOptions?.mode === "llm-extraction-from-raw-html"
+            (extractorOptions?.mode === "llm-extraction-from-raw-html" && pageOptions.includeExtract)
             ? rawHtml
             : undefined,
         metadata: {
@@ -434,7 +438,7 @@ export async function scrapSingleUrl(
     });
     return {
       content: "",
-      markdown: pageOptions.includeMarkdown ? "" : undefined,
+      markdown: pageOptions.includeMarkdown || pageOptions.includeExtract ? "" : undefined,
       html: "",
       linksOnPage: pageOptions.includeLinks ? [] : undefined,
       metadata: {
