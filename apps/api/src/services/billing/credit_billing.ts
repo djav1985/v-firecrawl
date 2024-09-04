@@ -40,14 +40,15 @@ export async function supaBillTeam(team_id: string, credits: number) {
   ]);
 
   let couponCredits = 0;
+  let sortedCoupons = [];
+
   if (coupons && coupons.length > 0) {
     couponCredits = coupons.reduce(
       (total, coupon) => total + coupon.credits,
       0
     );
+    sortedCoupons = [...coupons].sort((a, b) => b.credits - a.credits);
   }
-
-  let sortedCoupons = coupons.sort((a, b) => b.credits - a.credits);
   // using coupon credits:
   if (couponCredits > 0) {
     // if there is no subscription and they have enough coupon credits
@@ -255,7 +256,9 @@ export async function supaCheckTeamCredits(team_id: string, credits: number) {
     const creditLimit = FREE_CREDITS;
     const creditUsagePercentage = (totalCreditsUsed + credits) / creditLimit;
 
-    if (creditUsagePercentage >= 0.8) {
+    // Add a check to ensure totalCreditsUsed is greater than 0
+    if (totalCreditsUsed > 0 && creditUsagePercentage >= 0.8 && creditUsagePercentage < 1) {
+      Logger.info(`Sending notification for team ${team_id}. Total credits used: ${totalCreditsUsed}, Credit usage percentage: ${creditUsagePercentage}`);
       await sendNotification(
         team_id,
         NotificationType.APPROACHING_LIMIT,
@@ -462,8 +465,8 @@ async function createCreditUsage({
   subscription_id?: string;
   credits: number;
 }) {
-  const { data: credit_usage } = await supabase_service
-    .from("credit_usage")
+    await supabase_service
+      .from("credit_usage")
     .insert([
       {
         team_id,
@@ -471,8 +474,7 @@ async function createCreditUsage({
         subscription_id: subscription_id || null,
         created_at: new Date(),
       },
-    ])
-    .select();
+    ]);
 
-  return { success: true, credit_usage };
+  return { success: true };
 }
