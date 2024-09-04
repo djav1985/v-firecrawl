@@ -21,8 +21,8 @@ app = FastAPI()
 class UrlModel(BaseModel):
     """Model representing the URL and associated parameters for the request."""
     url: str
-    wait_after_load: int = 0
-    timeout: int = 15000
+    wait_after_load: int = 1000
+    timeout: int = 30000
     headers: dict = None
 
 browser: Browser = None
