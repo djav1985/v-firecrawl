@@ -402,15 +402,12 @@ class TopArticlesSchema(BaseModel):
     top: List[ArticleSchema] = Field(..., max_items=5, description="Top 5 stories")
 
 data = app.scrape_url('https://news.ycombinator.com', {
-    'extractorOptions': {
-        'extractionSchema': TopArticlesSchema.model_json_schema(),
-        'mode': 'llm-extraction'
-    },
-    'pageOptions':{
-        'onlyMainContent': True
+    'formats': ['extract'],
+    'extract': {
+        'schema': TopArticlesSchema.model_json_schema()
     }
 })
-print(data["llm_extraction"])
+print(data["extract"])
 ```
 
 ## Using the Node SDK

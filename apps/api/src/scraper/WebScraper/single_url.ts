@@ -146,6 +146,9 @@ export async function scrapSingleUrl(
     parsePDF: pageOptions.parsePDF ?? true,
     removeTags: pageOptions.removeTags ?? [],
     onlyIncludeTags: pageOptions.onlyIncludeTags ?? [],
+    useFastMode: pageOptions.useFastMode ?? false,
+    disableJsDom: pageOptions.disableJsDom ?? false,
+    atsv: pageOptions.atsv ?? false
   }
 
   if (extractorOptions) {
@@ -200,6 +203,7 @@ export async function scrapSingleUrl(
             fireEngineOptions: {
               engine: engine,
               atsv: pageOptions.atsv,
+              disableJsDom: pageOptions.disableJsDom,
             },
             priority,
             teamId,
