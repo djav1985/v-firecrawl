@@ -38,7 +38,7 @@ jobs:
         uses: docker/metadata-action@v5
         id: meta-playwright
         with:
-          images: vontainment/v-playwright-ts
+          images: vontainment/v-playwright
           tags: |
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
@@ -56,8 +56,8 @@ jobs:
       - name: Build and Push Playwright Service Image
         uses: docker/build-push-action@v5
         with:
-          context: ./apps/playwright-service-ts
-          file: ./apps/playwright-service-ts/Dockerfile
+          context: ./apps/playwright-service
+          file: ./apps/playwright-service/Dockerfile
           push: true
           tags: ${{ steps.meta-playwright.outputs.tags }}
           labels: ${{ steps.meta-playwright.outputs.labels }}
