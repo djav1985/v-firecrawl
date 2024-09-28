@@ -6,7 +6,11 @@ import { fetchAndProcessPdf } from "../utils/pdfProcessor";
 import { universalTimeout } from "../global";
 import { Logger } from "../../../lib/logger";
 import * as Sentry from "@sentry/node";
+import axiosRetry from 'axios-retry';
 
+axiosRetry(axios, { retries: 3 , onRetry:()=>{
+  console.log("Retrying (fire-engine)...");
+}, retryDelay: axiosRetry.exponentialDelay});
 /**
  * Scrapes a URL with Fire-Engine
  * @param url The URL to scrape
@@ -131,7 +135,9 @@ export async function scrapWithFireEngine({
     const waitTotal = (actions ?? []).filter(x => x.type === "wait").reduce((a, x) => (x as { type: "wait"; milliseconds: number; }).milliseconds + a, 0);
 
     let checkStatusResponse = await axiosInstance.get(`${process.env.FIRE_ENGINE_BETA_URL}/scrape/${_response.data.jobId}`);
-    while (checkStatusResponse.data.processing && Date.now() - startTime < universalTimeout + waitTotal) {
+
+    // added 5 seconds to the timeout to account for 'smart wait'
+    while (checkStatusResponse.data.processing && Date.now() - startTime < universalTimeout + waitTotal + 5000) {
       await new Promise(resolve => setTimeout(resolve, 250)); // wait 0.25 seconds
       checkStatusResponse = await axiosInstance.get(`${process.env.FIRE_ENGINE_BETA_URL}/scrape/${_response.data.jobId}`);
     }
@@ -201,10 +207,10 @@ export async function scrapWithFireEngine({
     }
   } catch (error) {
     if (error.code === "ECONNABORTED") {
-      Logger.debug(`⛏️ Fire-Engine: Request timed out for ${url}`);
+      Logger.debug(`⛏️ Fire-Engine (catch block): Request timed out for ${url}`);
       logParams.error_message = "Request timed out";
     } else {
-      Logger.debug(`⛏️ Fire-Engine: Failed to fetch url: ${url} | Error: ${error}`);
+      Logger.debug(`⛏️ Fire-Engine(catch block): Failed to fetch url: ${url} | Error: ${error}`);
       logParams.error_message = error.message || error;
     }
     return { html: "", pageStatusCode: null, pageError: logParams.error_message };
