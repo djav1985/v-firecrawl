@@ -1,13 +1,5 @@
 #!/bin/bash -e
 
-# Check if running as root to modify ulimit
-if [ "$UID" -eq 0 ]; then
-  ulimit -n 65535
-  echo "NEW ULIMIT: $(ulimit -n)"
-else
-  echo "ENTRYPOINT DID NOT RUN AS ROOT, CANNOT MODIFY ULIMIT"
-fi
-
 # Check the FLY_PROCESS_GROUP environment variable
 if [ "$FLY_PROCESS_GROUP" = "app" ]; then
   echo "RUNNING app"
