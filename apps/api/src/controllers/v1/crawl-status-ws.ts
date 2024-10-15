@@ -94,11 +94,26 @@ async function crawlStatusWS(ws: WebSocket, req: RequestWithAuth<CrawlStatusPara
 
   doneJobIDs = await getDoneJobsOrdered(req.params.jobId);
 
-  const jobIDs = await getCrawlJobs(req.params.jobId);
+  let jobIDs = await getCrawlJobs(req.params.jobId);
   let jobStatuses = await Promise.all(jobIDs.map(async x => [x, await getScrapeQueue().getJobState(x)] as const));
   const throttledJobs = new Set(...await getThrottledJobs(req.auth.team_id));
-  jobStatuses = jobStatuses.filter(x => !throttledJobs.has(x[0])); // throttled jobs can have a failed status, but they are not actually failed
-  const status: Exclude<CrawlStatusResponse, ErrorResponse>["status"] = sc.cancelled ? "cancelled" : jobStatuses.every(x => x[1] === "completed") ? "completed" : jobStatuses.some(x => x[1] === "failed") ? "failed" : "scraping";
+
+  const throttledJobsSet = new Set(throttledJobs);
+
+  const validJobStatuses = [];
+  const validJobIDs = [];
+
+  for (const [id, status] of jobStatuses) {
+    if (!throttledJobsSet.has(id) && status !== "failed" && status !== "unknown") {
+      validJobStatuses.push([id, status]);
+      validJobIDs.push(id);
+    }
+  }
+
+  const status: Exclude<CrawlStatusResponse, ErrorResponse>["status"] = sc.cancelled ? "cancelled" : validJobStatuses.every(x => x[1] === "completed") ? "completed" : "scraping";
+
+  jobIDs = validJobIDs; // Use validJobIDs instead of jobIDs for further processing
+
   const doneJobs = await getJobs(doneJobIDs);
   const data = doneJobs.map(x => x.returnvalue);
 
