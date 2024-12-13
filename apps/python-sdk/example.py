@@ -2,12 +2,31 @@ import time
 import nest_asyncio
 import uuid
 from firecrawl.firecrawl import FirecrawlApp
+from pydantic import BaseModel, Field
+from typing import List
 
 app = FirecrawlApp(api_key="fc-")
 
 # Scrape a website:
 scrape_result = app.scrape_url('firecrawl.dev')
 print(scrape_result['markdown'])
+
+
+# Test batch scrape
+urls = ['https://example.com', 'https://docs.firecrawl.dev']
+batch_scrape_params = {
+    'formats': ['markdown', 'html'],
+}
+
+# Synchronous batch scrape
+batch_result = app.batch_scrape_urls(urls, batch_scrape_params)
+print("Synchronous Batch Scrape Result:")
+print(batch_result['data'][0]['markdown'])
+
+# Asynchronous batch scrape
+async_batch_result = app.async_batch_scrape_urls(urls, batch_scrape_params)
+print("\nAsynchronous Batch Scrape Result:")
+print(async_batch_result)
 
 # Crawl a website:
 idempotency_key = str(uuid.uuid4()) # optional idempotency key
@@ -33,9 +52,6 @@ print(crawl_status)
 
 # LLM Extraction:
 # Define schema to extract contents into using pydantic
-from pydantic import BaseModel, Field
-from typing import List
-
 class ArticleSchema(BaseModel):
     title: str
     points: int 
@@ -43,7 +59,7 @@ class ArticleSchema(BaseModel):
     commentsURL: str
 
 class TopArticlesSchema(BaseModel):
-    top: List[ArticleSchema] = Field(..., max_items=5, description="Top 5 stories")
+    top: List[ArticleSchema] = Field(..., description="Top 5 stories")
 
 llm_extraction_result = app.scrape_url('https://news.ycombinator.com', {
     'formats': ['extract'],
@@ -97,6 +113,22 @@ llm_extraction_result = app2.scrape_url('https://news.ycombinator.com', {
 # Map a website:
 map_result = app.map_url('https://firecrawl.dev', { 'search': 'blog' })
 print(map_result)
+
+# Extract URLs:
+class ExtractSchema(BaseModel):
+    title: str
+    description: str
+    links: List[str]
+
+# Define the schema using Pydantic
+extract_schema = ExtractSchema.schema()
+
+# Perform the extraction
+extract_result = app.extract(['https://firecrawl.dev'], {
+    'prompt': "Extract the title, description, and links from the website",
+    'schema': extract_schema
+})
+print(extract_result)
 
 # Crawl a website with WebSockets:
 # inside an async function...

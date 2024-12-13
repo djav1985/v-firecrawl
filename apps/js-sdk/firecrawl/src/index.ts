@@ -82,11 +82,19 @@ export interface CrawlScrapeOptions {
   onlyMainContent?: boolean;
   waitFor?: number;
   timeout?: number;
+  location?: {
+    country?: string;
+    languages?: string[];
+  };
+  mobile?: boolean;
+  skipTlsVerification?: boolean;
+  removeBase64Images?: boolean;
 }
 
 export type Action = {
   type: "wait",
-  milliseconds: number,
+  milliseconds?: number,
+  selector?: string,
 } | {
   type: "click",
   selector: string,
@@ -101,7 +109,13 @@ export type Action = {
   key: string,
 } | {
   type: "scroll",
-  direction: "up" | "down",
+  direction?: "up" | "down",
+  selector?: string,
+} | {
+  type: "scrape",
+} | {
+  type: "executeJavascript",
+  script: string,
 };
 
 export interface ScrapeParams<LLMSchema extends zt.ZodSchema = any, ActionsSchema extends (Action[] | undefined) = undefined> extends CrawlScrapeOptions {
@@ -140,7 +154,13 @@ export interface CrawlParams {
   allowExternalLinks?: boolean;
   ignoreSitemap?: boolean;
   scrapeOptions?: CrawlScrapeOptions;
-  webhook?: string;
+  webhook?: string | {
+    url: string;
+    headers?: Record<string, string>;
+    metadata?: Record<string, string>;
+  };
+  deduplicateSimilarURLs?: boolean;
+  ignoreQueryParameters?: boolean;
 }
 
 /**
@@ -148,6 +168,17 @@ export interface CrawlParams {
  * Defines the structure of the response received after initiating a crawl.
  */
 export interface CrawlResponse {
+  id?: string;
+  url?: string;
+  success: true;
+  error?: string;
+}
+
+/**
+ * Response interface for batch scrape operations.
+ * Defines the structure of the response received after initiating a crawl.
+ */
+export interface BatchScrapeResponse {
   id?: string;
   url?: string;
   success: true;
@@ -170,6 +201,21 @@ export interface CrawlStatusResponse {
 };
 
 /**
+ * Response interface for batch scrape job status checks.
+ * Provides detailed status of a batch scrape job including progress and results.
+ */
+export interface BatchScrapeStatusResponse {
+  success: true;
+  status: "scraping" | "completed" | "failed" | "cancelled";
+  completed: number;
+  total: number;
+  creditsUsed: number;
+  expiresAt: Date;
+  next?: string;
+  data: FirecrawlDocument<undefined>[];
+};
+
+/**
  * Parameters for mapping operations.
  * Defines options for mapping URLs during a crawl.
  */
@@ -177,6 +223,7 @@ export interface MapParams {
   search?: string;
   ignoreSitemap?: boolean;
   includeSubdomains?: boolean;
+  sitemapOnly?: boolean;
   limit?: number;
 }
 
@@ -191,6 +238,28 @@ export interface MapResponse {
 }
 
 /**
+ * Parameters for extracting information from URLs.
+ * Defines options for extracting information from URLs.
+ */
+export interface ExtractParams<LLMSchema extends zt.ZodSchema = any> {
+  prompt: string;
+  schema?: LLMSchema;
+  systemPrompt?: string;
+  allowExternalLinks?: boolean;
+}
+
+/**
+ * Response interface for extracting information from URLs.
+ * Defines the structure of the response received after extracting information from URLs.
+ */
+export interface ExtractResponse<LLMSchema extends zt.ZodSchema = any> {
+  success: boolean;
+  data: LLMSchema;
+  error?: string;
+  warning?: string;
+}
+
+/**
  * Error response interface.
  * Defines the structure of the response received when an error occurs.
  */
@@ -198,7 +267,6 @@ export interface ErrorResponse {
   success: false;
   error: string;
 }
-
 
 /**
  * Custom error class for Firecrawl.
@@ -486,6 +554,212 @@ export default class FirecrawlApp {
         return response.data as MapResponse;
       } else {
         this.handleError(response, "map");
+      }
+    } catch (error: any) {
+      throw new FirecrawlError(error.message, 500);
+    }
+    return { success: false, error: "Internal server error." };
+  }
+
+  /**
+   * Initiates a batch scrape job for multiple URLs using the Firecrawl API.
+   * @param url - The URLs to scrape.
+   * @param params - Additional parameters for the scrape request.
+   * @param pollInterval - Time in seconds for job status checks.
+   * @param idempotencyKey - Optional idempotency key for the request.
+   * @param webhook - Optional webhook for the batch scrape.
+   * @returns The response from the crawl operation.
+   */
+  async batchScrapeUrls(
+    urls: string[],
+    params?: ScrapeParams,
+    pollInterval: number = 2,
+    idempotencyKey?: string,
+    webhook?: CrawlParams["webhook"],
+  ): Promise<BatchScrapeStatusResponse | ErrorResponse> {
+    const headers = this.prepareHeaders(idempotencyKey);
+    let jsonData: any = { urls, ...params };
+    if (jsonData?.extract?.schema) {
+      let schema = jsonData.extract.schema;
+
+      // Try parsing the schema as a Zod schema
+      try {
+        schema = zodToJsonSchema(schema);
+      } catch (error) {
+        
+      }
+      jsonData = {
+        ...jsonData,
+        extract: {
+          ...jsonData.extract,
+          schema: schema,
+        },
+      };
+    }
+    try {
+      const response: AxiosResponse = await this.postRequest(
+        this.apiUrl + `/v1/batch/scrape`,
+        jsonData,
+        headers
+      );
+      if (response.status === 200) {
+        const id: string = response.data.id;
+        return this.monitorJobStatus(id, headers, pollInterval);
+      } else {
+        this.handleError(response, "start batch scrape job");
+      }
+    } catch (error: any) {
+      if (error.response?.data?.error) {
+        throw new FirecrawlError(`Request failed with status code ${error.response.status}. Error: ${error.response.data.error} ${error.response.data.details ? ` - ${JSON.stringify(error.response.data.details)}` : ''}`, error.response.status);
+      } else {
+        throw new FirecrawlError(error.message, 500);
+      }
+    }
+    return { success: false, error: "Internal server error." };
+  }
+
+  async asyncBatchScrapeUrls(
+    urls: string[],
+    params?: ScrapeParams,
+    idempotencyKey?: string
+  ): Promise<BatchScrapeResponse | ErrorResponse> {
+    const headers = this.prepareHeaders(idempotencyKey);
+    let jsonData: any = { urls, ...(params ?? {}) };
+    try {
+      const response: AxiosResponse = await this.postRequest(
+        this.apiUrl + `/v1/batch/scrape`,
+        jsonData,
+        headers
+      );
+      if (response.status === 200) {
+        return response.data;
+      } else {
+        this.handleError(response, "start batch scrape job");
+      }
+    } catch (error: any) {
+      if (error.response?.data?.error) {
+        throw new FirecrawlError(`Request failed with status code ${error.response.status}. Error: ${error.response.data.error} ${error.response.data.details ? ` - ${JSON.stringify(error.response.data.details)}` : ''}`, error.response.status);
+      } else {
+        throw new FirecrawlError(error.message, 500);
+      }
+    }
+    return { success: false, error: "Internal server error." };
+  }
+
+  /**
+   * Initiates a batch scrape job and returns a CrawlWatcher to monitor the job via WebSocket.
+   * @param urls - The URL to scrape.
+   * @param params - Additional parameters for the scrape request.
+   * @param idempotencyKey - Optional idempotency key for the request.
+   * @returns A CrawlWatcher instance to monitor the crawl job.
+   */
+  async batchScrapeUrlsAndWatch(
+    urls: string[],
+    params?: ScrapeParams,
+    idempotencyKey?: string,
+  ) {
+    const crawl = await this.asyncBatchScrapeUrls(urls, params, idempotencyKey);
+
+    if (crawl.success && crawl.id) {
+      const id = crawl.id;
+      return new CrawlWatcher(id, this);
+    }
+
+    throw new FirecrawlError("Batch scrape job failed to start", 400);
+  }
+
+  /**
+   * Checks the status of a batch scrape job using the Firecrawl API.
+   * @param id - The ID of the batch scrape operation.
+   * @param getAllData - Paginate through all the pages of documents, returning the full list of all documents. (default: `false`)
+   * @returns The response containing the job status.
+   */
+  async checkBatchScrapeStatus(id?: string, getAllData = false): Promise<BatchScrapeStatusResponse | ErrorResponse> {
+    if (!id) {
+      throw new FirecrawlError("No batch scrape ID provided", 400);
+    }
+
+    const headers: AxiosRequestHeaders = this.prepareHeaders();
+    try {
+      const response: AxiosResponse = await this.getRequest(
+        `${this.apiUrl}/v1/batch/scrape/${id}`,
+        headers
+      );
+      if (response.status === 200) {
+        let allData = response.data.data;
+        if (getAllData && response.data.status === "completed") {
+          let statusData = response.data
+          if ("data" in statusData) {
+            let data = statusData.data;
+            while ('next' in statusData) {
+              statusData = (await this.getRequest(statusData.next, headers)).data;
+              data = data.concat(statusData.data);
+            }
+            allData = data;
+          }
+        }
+        return ({
+          success: response.data.success,
+          status: response.data.status,
+          total: response.data.total,
+          completed: response.data.completed,
+          creditsUsed: response.data.creditsUsed,
+          expiresAt: new Date(response.data.expiresAt),
+          next: response.data.next,
+          data: allData,
+          error: response.data.error,
+        })
+      } else {
+        this.handleError(response, "check batch scrape status");
+      }
+    } catch (error: any) {
+      throw new FirecrawlError(error.message, 500);
+    }
+    return { success: false, error: "Internal server error." };
+  }
+
+  /**
+   * Extracts information from URLs using the Firecrawl API.
+   * Currently in Beta. Expect breaking changes on future minor versions.
+   * @param url - The URL to extract information from.
+   * @param params - Additional parameters for the extract request.
+   * @returns The response from the extract operation.
+   */
+  async extract<T extends zt.ZodSchema = any>(urls: string[], params?: ExtractParams<T>): Promise<ExtractResponse<zt.infer<T>> | ErrorResponse> {
+    const headers = this.prepareHeaders();
+
+    if (!params?.prompt) {
+      throw new FirecrawlError("Prompt is required", 400);
+    }
+
+    let jsonData: { urls: string[] } & ExtractParams<T> = { urls,  ...params };
+    let jsonSchema: any;
+    try {
+      jsonSchema = params?.schema ? zodToJsonSchema(params.schema) : undefined;
+    } catch (error: any) {
+      throw new FirecrawlError("Invalid schema. Use a valid Zod schema.", 400);
+    }
+
+    try {
+      const response: AxiosResponse = await this.postRequest(
+        this.apiUrl + `/v1/extract`,
+        { ...jsonData, schema: jsonSchema },
+        headers
+      );
+      if (response.status === 200) {
+        const responseData = response.data as ExtractResponse<T>;
+        if (responseData.success) {
+          return {
+            success: true,
+            data: responseData.data,
+            warning: responseData.warning,
+            error: responseData.error
+          };
+        } else {
+          throw new FirecrawlError(`Failed to scrape URL. Error: ${responseData.error}`, response.status);
+        }
+      } else {
+        this.handleError(response, "extract");
       }
     } catch (error: any) {
       throw new FirecrawlError(error.message, 500);

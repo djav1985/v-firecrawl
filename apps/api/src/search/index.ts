@@ -1,19 +1,20 @@
-import { Logger } from "../../src/lib/logger";
+import { logger } from "../../src/lib/logger";
 import { SearchResult } from "../../src/lib/entities";
 import { googleSearch } from "./googlesearch";
 import { fireEngineMap } from "./fireEngine";
+import { searchapi_search } from "./searchapi";
 import { serper_search } from "./serper";
 
 export async function search({
   query,
   advanced = false,
   num_results = 7,
-  tbs = null,
-  filter = null,
+  tbs = undefined,
+  filter = undefined,
   lang = "en",
   country = "us",
   location = undefined,
-  proxy = null,
+  proxy = undefined,
   sleep_interval = 0,
   timeout = 5000,
 }: {
@@ -30,9 +31,18 @@ export async function search({
   timeout?: number;
 }): Promise<SearchResult[]> {
   try {
-    
     if (process.env.SERPER_API_KEY) {
       return await serper_search(query, {
+        num_results,
+        tbs,
+        filter,
+        lang,
+        country,
+        location,
+      });
+    }
+    if (process.env.SEARCHAPI_API_KEY) {
+      return await searchapi_search(query, {
         num_results,
         tbs,
         filter,
@@ -51,10 +61,10 @@ export async function search({
       country,
       proxy,
       sleep_interval,
-      timeout
+      timeout,
     );
   } catch (error) {
-    Logger.error(`Error in search function: ${error}`);
+    logger.error(`Error in search function: ${error}`);
     return [];
   }
 }
